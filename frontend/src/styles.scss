@@ -1,0 +1,16 @@
+@use './pages/workbench-pages';
+
+html, body { height: 100%; }
+body {
+  margin: 0;
+  color: #26383f;
+  background: #f2f4f5;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  letter-spacing: 0;
+}
+
+button, input, textarea, select { font: inherit; letter-spacing: 0; }
+* { box-sizing: border-box; }
+.mat-mdc-form-field { letter-spacing: 0; }
+.mat-mdc-snack-bar-container { --mdc-snackbar-container-color: #203139; --mdc-snackbar-supporting-text-color: #fff; }
+.mat-mdc-dialog-container { --mdc-dialog-container-shape: 6px; }

@@ -1,0 +1,83 @@
+name: airport-ground-equipment-clearance
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ground_clearance}
+      POSTGRES_USER: ${DB_USER:-ground_clearance}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ground_clearance_pwd}
+      TZ: Asia/Shanghai
+    ports:
+      - "${DB_PORT:-45404}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-46404}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      SERVER_PORT: "8080"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-ground_clearance}
+      DB_USER: ${DB_USER:-ground_clearance}
+      DB_PASSWORD: ${DB_PASSWORD:-ground_clearance_pwd}
+      DB_SSLMODE: disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      JWT_SECRET: ${JWT_SECRET:-change_me_to_a_long_random_string}
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-24}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-240}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+      APP_CORS_ORIGINS: ${APP_CORS_ORIGINS:-http://localhost:18504,http://127.0.0.1:18504}
+    ports:
+      - "${BACKEND_PORT:-19504}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-18504}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+    name: ${COMPOSE_PROJECT_NAME:-airport-ground-equipment-clearance}-postgres-data
+  redis-data:
+    name: ${COMPOSE_PROJECT_NAME:-airport-ground-equipment-clearance}-redis-data
