@@ -98,6 +98,21 @@ func (r *SafetyCheckRepository) FindByIDTx(tx *gorm.DB, id uint64) (*model.Safet
 	return &check, nil
 }
 
+// FindByIDsTx loads checks by IDs. With forUpdate it takes row locks in
+// ascending ID order so concurrent single and batch reviews share one
+// deterministic lock ordering and cannot deadlock.
+func (r *SafetyCheckRepository) FindByIDsTx(tx *gorm.DB, ids []uint64, forUpdate bool) ([]model.SafetyCheck, error) {
+	var rows []model.SafetyCheck
+	query := tx.Where("id IN ?", ids).Order("id ASC")
+	if forUpdate {
+		query = tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", ids).Order("id ASC")
+	}
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("find safety checks by ids: %w", err)
+	}
+	return rows, nil
+}
+
 func (r *SafetyCheckRepository) UpdateTx(tx *gorm.DB, check *model.SafetyCheck) error {
 	if err := tx.Save(check).Error; err != nil {
 		return fmt.Errorf("update safety check: %w", err)

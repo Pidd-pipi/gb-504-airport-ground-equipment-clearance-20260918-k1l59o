@@ -92,3 +92,22 @@ func (h *SafetyCheckHandler) Review(c *gin.Context) {
 	c.Set("audit_persisted", true)
 	OK(c, check)
 }
+
+func (h *SafetyCheckHandler) BatchReview(c *gin.Context) {
+	var request dto.SafetyCheckBatchReviewRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		Fail(c, http.StatusBadRequest, constants.CodeBadRequest, err.Error())
+		return
+	}
+	decisions := make([]service.BatchReviewDecision, 0, len(request.Items))
+	for _, item := range request.Items {
+		decisions = append(decisions, service.BatchReviewDecision{ID: item.ID, Result: item.Result})
+	}
+	checks, err := h.svc.BatchReview(decisions, request.Evidence, request.Remark, middleware.GetUserID(c), requestAuditContext(c))
+	if err != nil {
+		handleServiceError(c, h.logger, err, "safety check batch review")
+		return
+	}
+	c.Set("audit_persisted", true)
+	OK(c, gin.H{"reviewed": len(checks), "items": checks})
+}

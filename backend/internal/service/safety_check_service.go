@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -158,6 +159,142 @@ func (s *SafetyCheckService) Review(id, operatorID uint64, result string, eviden
 	}
 	s.logger.Info(constants.LogSafetyCheckReviewed, "check_id", check.ID, "result", result)
 	return check, nil
+}
+
+// BatchReviewDecision pairs one selected check with its per-item conclusion.
+type BatchReviewDecision struct {
+	ID     uint64
+	Result string
+}
+
+// BatchReview records several check conclusions that share one remark and one
+// evidence set. Validation and every write happen in one transaction: if any
+// item is missing, already reviewed, belongs to a decisioned turnaround, or
+// the shared evidence is invalid, the whole batch fails without partial
+// conclusions.
+func (s *SafetyCheckService) BatchReview(decisions []BatchReviewDecision, evidence []string, remark string, operatorID uint64, actor AuditContext) ([]model.SafetyCheck, error) {
+	if len(decisions) == 0 || len(decisions) > 50 {
+		return nil, util.NewAppError(constants.CodeValidationFailed, "between 1 and 50 checks are required")
+	}
+	ids := make([]uint64, 0, len(decisions))
+	resultByID := make(map[uint64]string, len(decisions))
+	for _, decision := range decisions {
+		if decision.ID == 0 || !constants.In(constants.CheckResultValues, decision.Result) || decision.Result == constants.CheckPending {
+			return nil, util.NewAppError(constants.CodeValidationFailed, "invalid batch review item")
+		}
+		if _, duplicated := resultByID[decision.ID]; duplicated {
+			return nil, util.NewAppError(constants.CodeValidationFailed, "duplicate check in batch review")
+		}
+		resultByID[decision.ID] = decision.Result
+		ids = append(ids, decision.ID)
+	}
+	normalizedEvidence, err := normalizeEvidence(evidence)
+	if err != nil {
+		return nil, err
+	}
+	trimmedRemark := strings.TrimSpace(remark)
+	updated := make([]model.SafetyCheck, 0, len(decisions))
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// Snapshot preload to resolve turnaround IDs; rows are re-locked and
+		// re-validated below so concurrent reviews cannot sneak through.
+		preload, err := s.repo.FindByIDsTx(tx, ids, false)
+		if err != nil {
+			return err
+		}
+		if len(preload) != len(ids) {
+			return util.NewAppError(constants.CodeNotFound, "one or more checks do not exist")
+		}
+		turnaroundIDs := make(map[uint64]struct{})
+		for _, check := range preload {
+			turnaroundIDs[check.TurnaroundID] = struct{}{}
+		}
+		sortedTurnaroundIDs := make([]uint64, 0, len(turnaroundIDs))
+		for id := range turnaroundIDs {
+			sortedTurnaroundIDs = append(sortedTurnaroundIDs, id)
+		}
+		sort.Slice(sortedTurnaroundIDs, func(i, j int) bool { return sortedTurnaroundIDs[i] < sortedTurnaroundIDs[j] })
+		// Lock affected turnarounds and their clearance decisions first, in a
+		// fixed order, to serialize with single-item reviews and other batches.
+		turnarounds := make(map[uint64]*model.Turnaround, len(sortedTurnaroundIDs))
+		for _, turnaroundID := range sortedTurnaroundIDs {
+			turnaround, err := s.turnaroundRepo.FindByIDTx(tx, turnaroundID)
+			if err != nil {
+				return err
+			}
+			if turnaround.Status != constants.TurnaroundOpen && turnaround.Status != constants.TurnaroundChecking {
+				return util.NewAppError(constants.CodeStateConflict, "checks cannot be reviewed after a clearance decision")
+			}
+			decision, err := s.clearanceRepo.FindByTurnaroundTx(tx, turnaroundID)
+			if err != nil || decision.State != constants.ClearancePending {
+				return util.NewAppError(constants.CodeStateConflict, "checks cannot be reviewed after a clearance decision")
+			}
+			turnarounds[turnaroundID] = turnaround
+		}
+		// Lock check rows in ascending ID order together with single reviews.
+		lockedRows, err := s.repo.FindByIDsTx(tx, ids, true)
+		if err != nil {
+			return err
+		}
+		lockedByID := make(map[uint64]*model.SafetyCheck, len(lockedRows))
+		for i := range lockedRows {
+			lockedByID[lockedRows[i].ID] = &lockedRows[i]
+		}
+		now := time.Now()
+		promotedTurnaround := make(map[uint64]struct{})
+		for _, decision := range decisions {
+			locked := lockedByID[decision.ID]
+			if locked == nil {
+				return util.NewAppError(constants.CodeNotFound, "one or more checks do not exist")
+			}
+			turnaround := turnarounds[locked.TurnaroundID]
+			if turnaround == nil {
+				return util.NewAppError(constants.CodeStateConflict, "check has already been reviewed")
+			}
+			if locked.Result != constants.CheckPending {
+				return util.NewAppError(constants.CodeStateConflict, "check has already been reviewed")
+			}
+			locked.Result = decision.Result
+			locked.Evidence = model.JSONList(normalizedEvidence)
+			locked.Remark = trimmedRemark
+			locked.CheckedBy = operatorID
+			locked.CheckedAt = &now
+			if err := s.repo.UpdateTx(tx, locked); err != nil {
+				return err
+			}
+			if turnaround.Status == constants.TurnaroundOpen {
+				if _, promoted := promotedTurnaround[turnaround.ID]; !promoted {
+					turnaround.Status = constants.TurnaroundChecking
+					if err := s.turnaroundRepo.UpdateStatusTx(tx, turnaround, turnaround.Version); err != nil {
+						return err
+					}
+					promotedTurnaround[turnaround.ID] = struct{}{}
+				}
+			}
+			if err := persistTransitionAudit(tx, actor, "SAFETY_CHECK_REVIEW", "checks", locked.ID, map[string]any{
+				"turnaround_id": locked.TurnaroundID, "result": decision.Result, "remark": trimmedRemark,
+				"evidence": normalizedEvidence, "checked_by": operatorID,
+				"batch": true, "batch_size": len(decisions),
+			}); err != nil {
+				return err
+			}
+		}
+		updated = lockedRows
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.logger.Info(constants.LogSafetyCheckReviewed, "batch_size", len(decisions), "reviewed", len(updated))
+	// Return conclusions in the order the caller submitted them.
+	ordered := make([]model.SafetyCheck, 0, len(decisions))
+	byID := make(map[uint64]model.SafetyCheck, len(updated))
+	for _, check := range updated {
+		byID[check.ID] = check
+	}
+	for _, decision := range decisions {
+		ordered = append(ordered, byID[decision.ID])
+	}
+	return ordered, nil
 }
 
 func turnaroundHasUnit(row *model.Turnaround, unitID uint64) bool {

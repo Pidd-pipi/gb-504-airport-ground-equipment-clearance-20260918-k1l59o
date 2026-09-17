@@ -31,3 +31,14 @@ type SafetyCheckReviewRequest struct {
 	Evidence []string `json:"evidence" binding:"required,min=1"`
 	Remark   string   `json:"remark" binding:"max=1000"`
 }
+
+type SafetyCheckBatchReviewItem struct {
+	ID     uint64 `json:"id" binding:"required"`
+	Result string `json:"result" binding:"required,oneof=passed failed"`
+}
+
+type SafetyCheckBatchReviewRequest struct {
+	Items    []SafetyCheckBatchReviewItem `json:"items" binding:"required,min=1,max=50,dive"`
+	Evidence []string                     `json:"evidence" binding:"required,min=1"`
+	Remark   string                       `json:"remark" binding:"max=1000"`
+}

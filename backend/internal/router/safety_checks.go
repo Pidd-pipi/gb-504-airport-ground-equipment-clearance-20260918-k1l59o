@@ -13,5 +13,6 @@ func (r *Router) registerCheckRoutes(group *gin.RouterGroup) {
 	routes.GET("", r.check.List)
 	routes.GET("/summary", r.check.Summary)
 	routes.POST("", middleware.RequireRole(constants.RoleAdmin, constants.RoleSafetyManager, constants.RoleInspector), r.check.Create)
+	routes.POST("/batch-review", middleware.RequireRole(constants.RoleAdmin, constants.RoleSafetyManager, constants.RoleInspector), r.check.BatchReview)
 	routes.PATCH("/:id/review", middleware.RequireRole(constants.RoleAdmin, constants.RoleSafetyManager, constants.RoleInspector), r.check.Review)
 }

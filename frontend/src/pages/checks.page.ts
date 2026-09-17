@@ -2,6 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, inject, OnInit } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
@@ -10,7 +11,8 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
 import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
-import { checkReviewApi } from '../api/check.api';
+import { checkBatchReviewApi, checkReviewApi } from '../api/check.api';
+import { BatchReviewDialogComponent, BatchReviewDialogResult } from '../components/common/batch-review-dialog.component';
 import { ClearancePanelComponent } from '../components/common/clearance-panel.component';
 import { ConfirmDialogComponent } from '../components/common/confirm-dialog.component';
 import { EvidenceListComponent } from '../components/common/evidence-list.component';
@@ -28,7 +30,7 @@ import { parseHttpError, useHttp } from '../utils/request';
   selector: 'app-checks-page',
   standalone: true,
   imports: [
-    CommonModule, ReactiveFormsModule, MatButtonModule, MatDialogModule, MatFormFieldModule, MatIconModule,
+    CommonModule, ReactiveFormsModule, MatButtonModule, MatCheckboxModule, MatDialogModule, MatFormFieldModule, MatIconModule,
     MatInputModule, MatPaginatorModule, MatProgressBarModule, MatSelectModule, MatSnackBarModule, ClearancePanelComponent,
     EvidenceListComponent, RiskBadgeComponent, StatusBadgeComponent,
   ],
@@ -48,10 +50,22 @@ import { parseHttpError, useHttp } from '../utils/request';
       <div class="check-list">
         <div class="table-tools">
           <div class="segmented"><button [class.selected]="filter === ''" (click)="setFilter('')">全部</button><button [class.selected]="filter === 'pending'" (click)="setFilter('pending')">待检查</button><button [class.selected]="filter === 'failed'" (click)="setFilter('failed')">未通过</button></div>
+          <button *ngIf="canReview" mat-stroked-button class="batch-toggle" (click)="toggleBatchMode()">
+            <mat-icon>{{ batchMode ? 'close' : 'fact_check' }}</mat-icon>{{ batchMode ? '退出批量' : '批量复核' }}
+          </button>
+        </div>
+        <div class="batch-bar" *ngIf="batchMode && canReview">
+          <mat-checkbox [checked]="pageAllSelected" [indeterminate]="pageSomeSelected" (change)="togglePage($event.checked)">本页全选</mat-checkbox>
+          <span class="batch-count">已勾选 <strong>{{ selectedIds.size }}</strong> 项待检</span>
+          <span class="batch-spacer"></span>
+          <button mat-stroked-button (click)="clearSelection()" [disabled]="!selectedIds.size">清空</button>
+          <button mat-flat-button (click)="openBatchDialog()" [disabled]="!selectedIds.size"><mat-icon>rule_folder</mat-icon>批量复核{{ selectedIds.size ? '（' + selectedIds.size + '）' : '' }}</button>
         </div>
         <mat-progress-bar *ngIf="store.loading()" mode="indeterminate"></mat-progress-bar>
         <p class="error" *ngIf="store.error()">{{ store.error() }}</p>
-        <button type="button" class="check-row" *ngFor="let item of store.items()" [class.selected]="selected?.id === item.id" (click)="select(item)">
+        <button type="button" class="check-row" [class.batch-mode]="batchMode && canReview" [class.selected]="selected?.id === item.id" *ngFor="let item of store.items()" (click)="select(item)">
+          <mat-checkbox class="row-check" *ngIf="batchMode && canReview && item.result === 'pending'" [checked]="selectedIds.has(item.id)" (click)="$event.stopPropagation()" (change)="toggleOne(item, $event.checked)"></mat-checkbox>
+          <span class="row-check placeholder-check" *ngIf="batchMode && canReview && item.result !== 'pending'"></span>
           <span class="sequence">{{ item.sequence | number:'2.0' }}</span>
           <span class="check-copy"><strong>{{ item.item_name }}</strong><small>{{ item.check_code }} · 周转 #{{ item.turnaround_id }}<span *ngIf="item.ground_unit_id"> · 设备 #{{ item.ground_unit_id }}</span></small></span>
           <app-risk-badge [level]="item.risk_level"></app-risk-badge>
@@ -92,6 +106,8 @@ export class ChecksPage implements OnInit {
   selected: SafetyCheck | null = null;
   filter = '';
   saving = false;
+  batchMode = false;
+  readonly selectedIds = new Set<number>();
   readonly reviewForm = this.fb.nonNullable.group({
     result: ['passed' as 'passed' | 'failed', Validators.required],
     evidence: ['', Validators.required], remark: [''],
@@ -99,11 +115,67 @@ export class ChecksPage implements OnInit {
 
   ngOnInit(): void { this.reload(); this.clearances.load(1, 200); }
   get pendingCount(): number { return this.store.summary().results.pending; }
+  get pagePendingItems(): SafetyCheck[] { return this.store.items().filter(item => item.result === 'pending'); }
+  get pageAllSelected(): boolean { return this.pagePendingItems.length > 0 && this.pagePendingItems.every(item => this.selectedIds.has(item.id)); }
+  get pageSomeSelected(): boolean { return this.pagePendingItems.some(item => this.selectedIds.has(item.id)) && !this.pageAllSelected; }
+
   setFilter(result: string): void { this.filter = result; this.selected = null; this.pagination.reset(); this.reload(); }
   reload(): void { this.store.load(this.pagination.page(), this.pagination.pageSize(), undefined, this.filter); }
   pageChanged(event: PageEvent): void { this.selected = null; this.pagination.setPage(event.pageIndex + 1); this.pagination.pageSize.set(event.pageSize); this.reload(); }
   select(item: SafetyCheck): void { this.selected = item; this.reviewForm.reset({ result: 'passed', evidence: '', remark: '' }); }
   decisionFor(turnaroundId: number) { return this.clearances.items().find(item => item.turnaround_id === turnaroundId) ?? null; }
+
+  toggleBatchMode(): void {
+    this.batchMode = !this.batchMode;
+    if (!this.batchMode) this.clearSelection();
+  }
+
+  clearSelection(): void { this.selectedIds.clear(); }
+
+  toggleOne(item: SafetyCheck, checked: boolean): void {
+    if (checked) this.selectedIds.add(item.id);
+    else this.selectedIds.delete(item.id);
+  }
+
+  togglePage(checked: boolean): void {
+    for (const item of this.pagePendingItems) {
+      if (checked) this.selectedIds.add(item.id);
+      else this.selectedIds.delete(item.id);
+    }
+  }
+
+  openBatchDialog(): void {
+    const checks = this.store.items().filter(item => this.selectedIds.has(item.id) && item.result === 'pending');
+    if (!checks.length) return;
+    this.dialog.open(BatchReviewDialogComponent, { data: { checks }, width: '640px' }).afterClosed()
+      .subscribe((result: BatchReviewDialogResult | null) => {
+        if (!result) return;
+        this.confirmAndSubmitBatch(result);
+      });
+  }
+
+  private confirmAndSubmitBatch(result: BatchReviewDialogResult): void {
+    const failedCount = result.items.filter(item => item.result === 'failed').length;
+    this.dialog.open(ConfirmDialogComponent, { data: {
+      title: '确认批量复核',
+      message: `将一次提交 ${result.items.length} 项结论（${result.items.length - failedCount} 项通过、${failedCount} 项未通过），共用同一证据与说明。提交在同一事务内完成，任一项已被复核将整批失败。`,
+      confirmText: '整批提交', danger: failedCount > 0,
+    }}).afterClosed().subscribe(confirmed => {
+      if (!confirmed) return;
+      this.saving = true;
+      checkBatchReviewApi(this.http, result.items, result.evidence, result.remark).subscribe({
+        next: response => {
+          this.saving = false;
+          this.clearSelection();
+          this.selected = null;
+          this.reload();
+          this.clearances.load(1, 200);
+          this.snack.open(`批量复核完成，已记录 ${response.reviewed} 项结论`, '关闭', { duration: 2600 });
+        },
+        error: error => { this.saving = false; this.snack.open(parseHttpError(error), '关闭', { duration: 4200 }); },
+      });
+    });
+  }
 
   review(): void {
     if (!this.selected || this.reviewForm.invalid) return;
@@ -116,7 +188,7 @@ export class ChecksPage implements OnInit {
       if (!confirmed || !this.selected) return;
       this.saving = true;
       checkReviewApi(this.http, this.selected.id, value.result, value.evidence.split(',').map(item => item.trim()).filter(Boolean), value.remark).subscribe({
-        next: updated => { this.saving = false; this.selected = updated; this.reload(); this.clearances.load(1, 200); this.snack.open('检查结论已记录', '关闭', { duration: 2200 }); },
+        next: updated => { this.saving = false; this.selected = updated; this.selectedIds.delete(updated.id); this.reload(); this.clearances.load(1, 200); this.snack.open('检查结论已记录', '关闭', { duration: 2200 }); },
         error: error => { this.saving = false; this.snack.open(parseHttpError(error), '关闭', { duration: 4000 }); },
       });
     });
