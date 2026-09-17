@@ -98,6 +98,27 @@ func (r *SafetyCheckRepository) FindByIDTx(tx *gorm.DB, id uint64) (*model.Safet
 	return &check, nil
 }
 
+// FindByIDsTx locks the requested checks and returns them in ascending ID order
+// so batch callers acquire row locks in a deterministic sequence.
+func (r *SafetyCheckRepository) FindByIDsTx(tx *gorm.DB, ids []uint64) ([]model.SafetyCheck, error) {
+	var rows []model.SafetyCheck
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", ids).
+		Order("id ASC").Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("find safety checks: %w", err)
+	}
+	return rows, nil
+}
+
+// FindByIDs reads checks without row locks, used only to resolve the lock
+// acquisition order for a batch review.
+func (r *SafetyCheckRepository) FindByIDs(ids []uint64) ([]model.SafetyCheck, error) {
+	var rows []model.SafetyCheck
+	if err := r.db.Where("id IN ?", ids).Order("id ASC").Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("find safety checks: %w", err)
+	}
+	return rows, nil
+}
+
 func (r *SafetyCheckRepository) UpdateTx(tx *gorm.DB, check *model.SafetyCheck) error {
 	if err := tx.Save(check).Error; err != nil {
 		return fmt.Errorf("update safety check: %w", err)

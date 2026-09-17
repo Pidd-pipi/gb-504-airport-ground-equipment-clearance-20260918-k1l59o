@@ -76,6 +76,52 @@ func TestNormalizeEvidence(t *testing.T) {
 	}
 }
 
+func TestValidateBatchItems(t *testing.T) {
+	results, err := validateBatchItems([]BatchReviewItem{
+		{CheckID: 3, Result: constants.CheckFailed},
+		{CheckID: 1, Result: constants.CheckPassed},
+		{CheckID: 2, Result: constants.CheckPassed},
+	})
+	if err != nil {
+		t.Fatalf("valid batch rejected: %v", err)
+	}
+	if len(results) != 3 || results[3] != constants.CheckFailed {
+		t.Fatalf("unexpected batch results: %#v", results)
+	}
+
+	rejected := []struct {
+		name  string
+		items []BatchReviewItem
+	}{
+		{"empty", nil},
+		{"zero id", []BatchReviewItem{{CheckID: 0, Result: constants.CheckPassed}}},
+		{"pending result", []BatchReviewItem{{CheckID: 1, Result: constants.CheckPending}}},
+		{"unknown result", []BatchReviewItem{{CheckID: 1, Result: "unknown"}}},
+		{"duplicate check", []BatchReviewItem{
+			{CheckID: 1, Result: constants.CheckPassed},
+			{CheckID: 1, Result: constants.CheckFailed},
+		}},
+	}
+	for _, tc := range rejected {
+		if _, err := validateBatchItems(tc.items); err == nil {
+			t.Fatalf("batch %s must be rejected", tc.name)
+		} else {
+			var appErr *util.AppError
+			if !errors.As(err, &appErr) || appErr.Code != constants.CodeValidationFailed {
+				t.Fatalf("batch %s returned unexpected error: %v", tc.name, err)
+			}
+		}
+	}
+
+	oversized := make([]BatchReviewItem, 101)
+	for i := range oversized {
+		oversized[i] = BatchReviewItem{CheckID: uint64(i + 1), Result: constants.CheckPassed}
+	}
+	if _, err := validateBatchItems(oversized); err == nil {
+		t.Fatal("batch over 100 items must be rejected")
+	}
+}
+
 func TestSharedEnums(t *testing.T) {
 	if !constants.IsValidUnitState(constants.UnitInspection) || constants.IsValidUnitState("broken") {
 		t.Fatal("unit state validation mismatch")

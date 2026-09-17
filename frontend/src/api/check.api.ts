@@ -17,3 +17,13 @@ export function checkSummaryApi(http: HttpClient): Observable<SafetyCheckSummary
 export function checkReviewApi(http: HttpClient, id: number, result: 'passed' | 'failed', evidence: string[], remark: string): Observable<SafetyCheck> {
   return http.patch<ApiResponse<SafetyCheck>>(`${API_BASE}/v1/checks/${id}/review`, { result, evidence, remark }).pipe(map(extractData));
 }
+
+export interface BatchReviewPayload {
+  items: { check_id: number; result: 'passed' | 'failed' }[];
+  evidence: string[];
+  remark: string;
+}
+
+export function checkBatchReviewApi(http: HttpClient, payload: BatchReviewPayload): Observable<{ list: SafetyCheck[]; reviewed: number }> {
+  return http.patch<ApiResponse<{ list: SafetyCheck[]; reviewed: number }>>(`${API_BASE}/v1/checks/batch-review`, payload).pipe(map(extractData));
+}

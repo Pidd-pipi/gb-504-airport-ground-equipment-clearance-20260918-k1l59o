@@ -96,6 +96,7 @@ const (
 	LogGroundUnitStateChanged = "ground unit state changed"
 	LogSafetyCheckCreated     = "safety check created"
 	LogSafetyCheckReviewed    = "safety check reviewed"
+	LogSafetyCheckBatchReview = "safety checks batch reviewed"
 	LogClearanceChanged       = "clearance state changed"
 )
 

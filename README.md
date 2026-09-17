@@ -29,7 +29,7 @@ docker compose up -d --build
 
 - `/turnarounds`：建立航班周转阶段，分配地面设备和首个检查项，跟踪周转状态与风险等级。
 - `/ground-units`：登记牵引车、地面电源、传送带等设备，维护 `available / inspection / blocked / retired` 状态。
-- `/checks`：逐项记录检查结论、说明和证据；检查复核使用事务锁且结论不可改写，未处理或失败检查会阻断完全放行。
+- `/checks`：逐项记录检查结论、说明和证据，也支持在检查工作台勾选多项批量复核；检查复核（单项与批量）使用事务锁且结论不可改写，批量复核任一项已被复核或证据无效时整批失败、不留部分结论；未处理或失败检查会阻断完全放行。
 - `/clearance`：形成 `cleared / restricted / revoked` 决定；完全放行同时要求全部关联设备可用，限制放行必须填写运行条件，紧急撤销不受未完成检查阻断。
 - `/audit`：查询所有写操作；放行状态迁移额外保存前态、后态、依据、证据和 request id。
 
@@ -69,6 +69,7 @@ docker-compose.yml
 | PATCH | `/turnarounds/:id/status` | 周转状态迁移（带版本号） | 管理角色 |
 | GET / POST | `/checks` | 查询 / 增加检查项 | 登录 / 检查角色 |
 | PATCH | `/checks/:id/review` | 提交结论和证据 | 检查角色 |
+| PATCH | `/checks/batch-review` | 批量复核多项检查（单事务，整批成败） | 检查角色 |
 | GET / POST | `/clearance` | 查询 / 形成放行决定 | 登录 / 管理角色 |
 | GET | `/audit` | 查询审计记录 | 管理角色 |
 
